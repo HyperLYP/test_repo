@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2020 XiaoMi, Inc.
  */
 
 #include <linux/iopoll.h>
@@ -414,7 +415,6 @@ static int cam_ife_csid_cid_get(struct cam_ife_csid_hw *csid_hw,
 	return -EINVAL;
 }
 
-
 static int cam_ife_csid_global_reset(struct cam_ife_csid_hw *csid_hw)
 {
 	struct cam_hw_soc_info                *soc_info;
@@ -793,7 +793,11 @@ int cam_ife_csid_cid_reserve(struct cam_ife_csid_hw *csid_hw,
 		/* current configure res type should match requested res type */
 		if (csid_hw->res_type != cid_reserv->in_port->res_type) {
 			rc = -EINVAL;
-			goto end;
+            CAM_ERR(CAM_ISP, "[wrong res_type], CSID:%d, csid_hw->res_type:%d, cid_reserv->res_type:%d",
+                    csid_hw->hw_intf->hw_idx,
+                    csid_hw->res_type,
+                    cid_reserv->in_port->res_type);
+            goto end;
 		}
 
 		if (cid_reserv->in_port->res_type != CAM_ISP_IFE_IN_RES_TPG) {
@@ -804,7 +808,13 @@ int cam_ife_csid_cid_reserve(struct cam_ife_csid_hw *csid_hw,
 				csid_hw->csi2_rx_cfg.lane_num !=
 				cid_reserv->in_port->lane_num) {
 				rc = -EINVAL;
-				goto end;
+                CAM_ERR(CAM_ISP,
+                        "[wrong lane configuration]: CSID:%d res_sel:0x%x Lane type:%d lane_num:%d",
+                        csid_hw->hw_intf->hw_idx,
+                        csid_hw->csi2_rx_cfg.lane_cfg,
+                        csid_hw->csi2_rx_cfg.lane_type,
+                        csid_hw->csi2_rx_cfg.lane_num);
+                goto end;
 				}
 		} else {
 			if (csid_hw->tpg_cfg.in_format !=
@@ -816,6 +826,17 @@ int cam_ife_csid_cid_reserve(struct cam_ife_csid_hw *csid_hw,
 				csid_hw->tpg_cfg.test_pattern !=
 				cid_reserv->in_port->test_pattern) {
 				rc = -EINVAL;
+                CAM_ERR(CAM_ISP,
+                        "[wrong tpg cfg]: CSID:%d hw_intf -> [in_format:%d width:%d height:%d test_pattern:%d] cid_reserv -> [in_format:%d width:%d height:%d test_pattern:%d]",
+                        csid_hw->hw_intf->hw_idx,
+                        csid_hw->tpg_cfg.in_format,
+                        csid_hw->tpg_cfg.width,
+                        csid_hw->tpg_cfg.height,
+                        csid_hw->tpg_cfg.test_pattern,
+                        cid_reserv->in_port->format,
+                        cid_reserv->in_port->left_width,
+                        cid_reserv->in_port->height,
+                        cid_reserv->in_port->test_pattern);
 				goto end;
 			}
 		}
@@ -1504,8 +1525,8 @@ static int cam_ife_csid_enable_csi2(
 
 	csid_reg = csid_hw->csid_info->csid_reg;
 	soc_info = &csid_hw->hw_info->soc_info;
-	CAM_DBG(CAM_ISP, "CSID:%d count:%d config csi2 rx",
-		csid_hw->hw_intf->hw_idx, csid_hw->csi2_cfg_cnt);
+	CAM_DBG(CAM_ISP, "CSID:%d count:%d config csi2 rx  res_id:%d",
+		csid_hw->hw_intf->hw_idx, csid_hw->csi2_cfg_cnt, res->res_id);
 
 	/* overflow check before increment */
 	if (csid_hw->csi2_cfg_cnt == UINT_MAX) {
@@ -1515,7 +1536,7 @@ static int cam_ife_csid_enable_csi2(
 	}
 
 	cid_data = (struct cam_ife_csid_cid_data *)res->res_priv;
-
+	cid_data->init_cnt++;
 	res->res_state  = CAM_ISP_RESOURCE_STATE_STREAMING;
 	csid_hw->csi2_cfg_cnt++;
 	if (csid_hw->csi2_cfg_cnt > 1)
@@ -1601,6 +1622,7 @@ static int cam_ife_csid_disable_csi2(
 {
 	const struct cam_ife_csid_reg_offset      *csid_reg;
 	struct cam_hw_soc_info                    *soc_info;
+	struct cam_ife_csid_cid_data              *cid_data;
 
 	if (res->res_id >= CAM_IFE_CSID_CID_MAX) {
 		CAM_ERR(CAM_ISP, "CSID:%d Invalid res id :%d",
@@ -1610,11 +1632,19 @@ static int cam_ife_csid_disable_csi2(
 
 	csid_reg = csid_hw->csid_info->csid_reg;
 	soc_info = &csid_hw->hw_info->soc_info;
-	CAM_DBG(CAM_ISP, "CSID:%d cnt : %d Disable csi2 rx",
-		csid_hw->hw_intf->hw_idx, csid_hw->csi2_cfg_cnt);
+	cid_data = (struct cam_ife_csid_cid_data *)res->res_priv;
+	CAM_DBG(CAM_ISP, "CSID:%d cnt : %d Disable csi2 rx res->res_id:%d",
+		csid_hw->hw_intf->hw_idx, csid_hw->csi2_cfg_cnt, res->res_id);
+
+	if (cid_data->init_cnt)
+		cid_data->init_cnt--;
+	if (!cid_data->init_cnt)
+		res->res_state = CAM_ISP_RESOURCE_STATE_RESERVED;
 
 	if (csid_hw->csi2_cfg_cnt)
 		csid_hw->csi2_cfg_cnt--;
+	CAM_DBG(CAM_ISP, "res_id %d res_state=%d",
+		res->res_id, res->res_state);
 
 	if (csid_hw->csi2_cfg_cnt)
 		return 0;
@@ -3236,6 +3266,7 @@ static int cam_ife_csid_reset_regs(
 
 	spin_lock_irqsave(&csid_hw->hw_info->hw_lock, flags);
 
+	csid_hw->is_resetting = true;
 	/* clear the top interrupt first */
 	cam_io_w_mb(1, soc_info->reg_map[0].mem_base +
 		csid_reg->cmn_reg->csid_top_irq_clear_addr);
@@ -3300,6 +3331,7 @@ static int cam_ife_csid_reset_regs(
 	}
 
 end:
+	csid_hw->is_resetting = false;
 	return rc;
 }
 
@@ -3474,6 +3506,7 @@ int cam_ife_csid_start(void *hw_priv, void *start_args,
 	struct cam_hw_info                     *csid_hw_info;
 	struct cam_isp_resource_node           *res;
 	const struct cam_ife_csid_reg_offset   *csid_reg;
+	unsigned long                           flags;
 
 	if (!hw_priv || !start_args ||
 		(arg_size != sizeof(struct cam_isp_resource_node))) {
@@ -3500,6 +3533,10 @@ int cam_ife_csid_start(void *hw_priv, void *start_args,
 	/* Reset sof irq debug fields */
 	csid_hw->sof_irq_triggered = false;
 	csid_hw->irq_debug_cnt = 0;
+
+	spin_lock_irqsave(&csid_hw->lock_state, flags);
+	csid_hw->device_enabled = 1;
+	spin_unlock_irqrestore(&csid_hw->lock_state, flags);
 
 	CAM_DBG(CAM_ISP, "CSID:%d res_type :%d res_id:%d",
 		csid_hw->hw_intf->hw_idx, res->res_type, res->res_id);
@@ -3549,6 +3586,7 @@ int cam_ife_csid_stop(void *hw_priv,
 	struct cam_csid_hw_stop_args         *csid_stop;
 	uint32_t  i;
 	uint32_t res_mask = 0;
+	unsigned long flags;
 
 	if (!hw_priv || !stop_args ||
 		(arg_size != sizeof(struct cam_csid_hw_stop_args))) {
@@ -3610,6 +3648,10 @@ int cam_ife_csid_stop(void *hw_priv,
 			break;
 		}
 	}
+
+	spin_lock_irqsave(&csid_hw->lock_state, flags);
+	csid_hw->device_enabled = 0;
+	spin_unlock_irqrestore(&csid_hw->lock_state, flags);
 
 	if (res_mask)
 		rc = cam_ife_csid_poll_stop_status(csid_hw, res_mask);
@@ -3913,6 +3955,14 @@ irqreturn_t cam_ife_csid_irq(int irq_num, void *data)
 	if (irq_status_top & CSID_TOP_IRQ_DONE) {
 		CAM_DBG(CAM_ISP, "csid top reset complete");
 		complete(&csid_hw->csid_top_complete);
+		csid_hw->is_resetting = false;
+		return IRQ_HANDLED;
+	}
+
+	if (csid_hw->is_resetting) {
+		CAM_DBG(CAM_ISP, "CSID:%d is resetting, IRQ Handling exit",
+		csid_hw->hw_intf->hw_idx);
+		return IRQ_HANDLED;
 	}
 
 	if (irq_status_rx & BIT(csid_reg->csi2_reg->csi2_rst_done_shift_val)) {
@@ -4294,6 +4344,7 @@ int cam_ife_csid_hw_probe_init(struct cam_hw_intf  *csid_hw_intf,
 
 
 	ife_csid_hw->device_enabled = 0;
+	ife_csid_hw->is_resetting = false;
 	ife_csid_hw->hw_info->hw_state = CAM_HW_STATE_POWER_DOWN;
 	mutex_init(&ife_csid_hw->hw_info->hw_mutex);
 	spin_lock_init(&ife_csid_hw->hw_info->hw_lock);
